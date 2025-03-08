@@ -31,11 +31,12 @@ def start(update, context):
 
 # Help command
 def help_command(update, context):
-    update.message.reply_text("""Available commands:
+    update.message.reply_text(\"\"\"Available commands:
     /analytics - Get advanced trading analytics
     /visualize - Get BNB price chart
     /order <price> <qty> - Place a limit order
-    "/"")
+    \"\"\")
+
 
 # Advanced analytics
 def analytics(update, context):
