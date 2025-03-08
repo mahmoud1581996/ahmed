@@ -4,6 +4,7 @@ import logging
 import telegram
 import asyncio
 import matplotlib.pyplot as plt
+import mplfinance as mpf
 from ta.trend import MACD
 from ta.momentum import RSIIndicator
 from ta.volatility import BollingerBands
@@ -31,6 +32,7 @@ class AdvancedBNBBot:
             bars = self.exchange.fetch_ohlcv(self.symbol, self.timeframe, limit=limit)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            df.set_index('timestamp', inplace=True)
             return df
         except Exception as e:
             logging.error(f"Error fetching market data: {e}")
@@ -73,14 +75,8 @@ class AdvancedBNBBot:
 
     def visualize_market(self, df):
         """Generate a market visualization and send it via Telegram."""
-        plt.figure(figsize=(10, 5))
-        plt.plot(df['timestamp'], df['close'], label='Price', color='blue')
-        plt.plot(df['timestamp'], df['BB_upper'], label='Bollinger Upper', linestyle='dashed')
-        plt.plot(df['timestamp'], df['BB_lower'], label='Bollinger Lower', linestyle='dashed')
-        plt.title(f"{self.symbol} Price with Bollinger Bands")
-        plt.xlabel("Time")
-        plt.ylabel("Price")
-        plt.legend()
+        fig, ax = plt.subplots(figsize=(10, 5))
+        mpf.plot(df, type='candle', mav=(10, 20), volume=True, ax=ax)
         buf = BytesIO()
         plt.savefig(buf, format='png')
         buf.seek(0)
