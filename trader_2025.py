@@ -108,7 +108,7 @@ if __name__ == "__main__":
     load_dotenv()
     api_key = os.getenv("API_KEY")
     api_secret = os.getenv("API_SECRET")
-    telegram_token = os.getenv("TELEGRAM_TOKEN")
+    telegram_token = "7149979903:AAEdmKT4L1mYBXKHp5A8UWClsPpHET-We2Q"
     chat_id = os.getenv("CHAT_ID")
     
     bot = AdvancedBNBBot(api_key, api_secret, telegram_token, chat_id)
