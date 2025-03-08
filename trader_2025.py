@@ -67,7 +67,7 @@ class BinanceTradingBot:
             df = self.calculate_indicators(df)
             signal = self.generate_signal(df)
             latest_price = df['close'].iloc[-1]
-            message = f"Market Update:\nSymbol: {self.symbol}\nLatest Price: {latest_price}\nEMA {self.ema_fast}: {df[f'EMA_{self.ema_fast}'].iloc[-1]}\nEMA {self.ema_slow}: {df[f'EMA_{self.ema_slow}'].iloc[-1]}\nCurrent Signal: {signal if signal else 'No trade signal'}"
+            message = f"Market Update:\nSymbol: {self.symbol}\nLatest Price: {latest_price}\nEMA {self.ema_fast}: {df[f'EMA_{self.ema_fast}'].iloc[-1]}\nEMA {self.ema_slow}: {df[f'EMA_{self.ema_slow}'].iloc[-1]}\nCurrent Signal: {signal if signal else 'Noo_ trade signal'}"
             await self.send_telegram_message(message)
 
     async def run(self):
@@ -91,10 +91,14 @@ class BinanceTradingBot:
             await asyncio.sleep(60)  # Adjust based on timeframe
 
 if __name__ == "__main__":
-        api_key = "scayeRgIf3bzItkG0yiCAwvyKOWzHxcOxiv9N4D1Yq3ip8sq9shyYjkqYx8wHlmS"
-        api_secret = "VvMyMouaEIJkHL7k9dW68Xi1sOVJHS76hTRVMn9KRbUV67ftkTsfmiXllFTNPbSa"
-        telegram_token = "8134343282:AAENJGX6aG59vw_ucUA2T3cj0GJEDlu77tI"
-        chat_id = "1741598973"
+       from dotenv import load_dotenv
+            import os
+            load_dotenv()
+
+             api_key = os.getenv("api_key")
+             api_secret = os.getenv("api_secret")
+             telegram_token = os.getenv("telegram_token")
+             chat_id = os.getenv("chat_id"
 
         bot = BinanceTradingBot(api_key, api_secret, telegram_token, chat_id, paper_trading=True)
         asyncio.run(bot.run())
