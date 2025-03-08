@@ -67,7 +67,7 @@ class BinanceTradingBot:
             df = self.calculate_indicators(df)
             signal = self.generate_signal(df)
             latest_price = df['close'].iloc[-1]
-            message = f"Market Update:\nSymbol: {self.symbol}\nLatest Price: {latest_price}\nEMA {self.ema_fast}: {df[f'EMA_{self.ema_fast}'].iloc[-1]}\nEMA {self.ema_slow}: {df[f'EMA_{self.ema_slow}'].iloc[-1]}\nCurrent Signal: {signal if signal else 'No trade signal'}"
+            message = f"Market Update:\nSymbol: {self.symbol}\nLatest Price: {latest_price}\nEMA {self.ema_fast}: {df[f'EMA_{self.ema_fast}'].iloc[-1]}\nEMA {self.ema_slow}: {df[f'EMA_{self.ema_slow}'].iloc[-1]}\nCurrent Signal: {signal if signal else 'Noo_ trade signal'}"
             await self.send_telegram_message(message)
 
     async def run(self):
