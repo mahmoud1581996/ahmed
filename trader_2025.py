@@ -1,17 +1,18 @@
 import ccxt
-import time
 import pandas as pd
 import logging
 import telegram
 import asyncio
+import matplotlib.pyplot as plt
+from ta.trend import MACD
+from ta.momentum import RSIIndicator
+from ta.volatility import BollingerBands
+from io import BytesIO
+from dotenv import load_dotenv
+import os
 
-
-class BinanceTradingBot:
-    def __init__(self, api_key, api_secret, telegram_token, chat_id, symbol='BNB/USDT', timeframe='1h', ema_fast=12,
-                 ema_slow=26, risk_reward=2.0, paper_trading=True):
-        """
-        Initialize the Binance Trading Bot
-        """
+class AdvancedBNBBot:
+    def __init__(self, api_key, api_secret, telegram_token, chat_id, symbol='BNB/USDT', timeframe='1h'):
         self.exchange = ccxt.binance({
             'apiKey': api_key,
             'secret': api_secret,
@@ -19,22 +20,13 @@ class BinanceTradingBot:
         })
         self.symbol = symbol
         self.timeframe = timeframe
-        self.ema_fast = ema_fast
-        self.ema_slow = ema_slow
-        self.risk_reward = risk_reward
-        self.position = None
-        self.paper_trading = paper_trading  # Enable/disable real trading
         self.telegram_token = telegram_token
         self.chat_id = chat_id
         self.bot = telegram.Bot(token=self.telegram_token)
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
-    async def send_telegram_message(self, message):
-        """Send a Telegram notification"""
-        await self.bot.send_message(chat_id=self.chat_id, text=message)
-
-    def fetch_market_data(self, limit=50):
-        """Fetch historical OHLCV data"""
+    def fetch_market_data(self, limit=100):
+        """Fetch OHLCV data from Binance."""
         try:
             bars = self.exchange.fetch_ohlcv(self.symbol, self.timeframe, limit=limit)
             df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -44,62 +36,84 @@ class BinanceTradingBot:
             logging.error(f"Error fetching market data: {e}")
             return None
 
-    def calculate_indicators(self, df):
-        """Calculate EMA indicators"""
-        df[f'EMA_{self.ema_fast}'] = df['close'].ewm(span=self.ema_fast, adjust=False).mean()
-        df[f'EMA_{self.ema_slow}'] = df['close'].ewm(span=self.ema_slow, adjust=False).mean()
-        return df
-
-    def generate_signal(self, df):
-        """Determine buy/sell signals based on EMA crossover"""
-        if df[f'EMA_{self.ema_fast}'].iloc[-2] < df[f'EMA_{self.ema_slow}'].iloc[-2] and \
-                df[f'EMA_{self.ema_fast}'].iloc[-1] > df[f'EMA_{self.ema_slow}'].iloc[-1]:
-            return 'buy'
-        elif df[f'EMA_{self.ema_fast}'].iloc[-2] > df[f'EMA_{self.ema_slow}'].iloc[-2] and \
-                df[f'EMA_{self.ema_fast}'].iloc[-1] < df[f'EMA_{self.ema_slow}'].iloc[-1]:
-            return 'sell'
-        return None
-
-    async def send_market_update(self):
-        """Send a market update report every 20 minutes"""
+    def analyze_market(self):
+        """Perform technical analysis using indicators."""
         df = self.fetch_market_data()
         if df is not None:
-            df = self.calculate_indicators(df)
-            signal = self.generate_signal(df)
-            latest_price = df['close'].iloc[-1]
-            message = f"Market Update:\nSymbol: {self.symbol}\nLatest Price: {latest_price}\nEMA {self.ema_fast}: {df[f'EMA_{self.ema_fast}'].iloc[-1]}\nEMA {self.ema_slow}: {df[f'EMA_{self.ema_slow}'].iloc[-1]}\nCurrent Signal: {signal if signal else 'Noo_ trade signal'}"
-            await self.send_telegram_message(message)
+            df['RSI'] = RSIIndicator(df['close']).rsi()
+            macd = MACD(df['close'])
+            df['MACD'] = macd.macd()
+            df['MACD_signal'] = macd.macd_signal()
+            bb = BollingerBands(df['close'])
+            df['BB_upper'] = bb.bollinger_hband()
+            df['BB_lower'] = bb.bollinger_lband()
 
-    async def run(self):
-        """Main bot loop"""
-        counter = 0
-        while True:
-            df = self.fetch_market_data()
-            if df is not None:
-                df = self.calculate_indicators(df)
-                signal = self.generate_signal(df)
+            # Decision Logic
+            last_rsi = df['RSI'].iloc[-1]
+            last_macd = df['MACD'].iloc[-1]
+            last_macd_signal = df['MACD_signal'].iloc[-1]
+            last_price = df['close'].iloc[-1]
 
-                if signal == 'buy' and self.position is None:
-                    self.position = self.place_order('buy', 0.01)  # Adjust position size
-                elif signal == 'sell' and self.position is not None:
-                    self.place_order('sell', 0.01)
-                    self.position = None
+            signal = "HOLD"
+            if last_rsi < 30 and last_macd > last_macd_signal:
+                signal = "BUY"
+            elif last_rsi > 70 and last_macd < last_macd_signal:
+                signal = "SELL"
 
-            if counter % 20 == 0:
-                await self.send_market_update()
-            counter += 1
-            await asyncio.sleep(60)  # Adjust based on timeframe
+            return df, signal, last_price
+        return None, None, None
+
+    async def send_analysis(self):
+        """Send market analysis to Telegram."""
+        df, signal, last_price = self.analyze_market()
+        if df is not None:
+            message = f"BNB Analysis:\nPrice: {last_price}\nSignal: {signal}\nRSI: {df['RSI'].iloc[-1]}\nMACD: {df['MACD'].iloc[-1]}\nMACD Signal: {df['MACD_signal'].iloc[-1]}"
+            await self.bot.send_message(chat_id=self.chat_id, text=message)
+            self.visualize_market(df)
+
+    def visualize_market(self, df):
+        """Generate a market visualization and send it via Telegram."""
+        plt.figure(figsize=(10, 5))
+        plt.plot(df['timestamp'], df['close'], label='Price', color='blue')
+        plt.plot(df['timestamp'], df['BB_upper'], label='Bollinger Upper', linestyle='dashed')
+        plt.plot(df['timestamp'], df['BB_lower'], label='Bollinger Lower', linestyle='dashed')
+        plt.title(f"{self.symbol} Price with Bollinger Bands")
+        plt.xlabel("Time")
+        plt.ylabel("Price")
+        plt.legend()
+        buf = BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)
+        asyncio.run(self.bot.send_photo(chat_id=self.chat_id, photo=buf))
+
+    async def handle_telegram_commands(self, update):
+        """Process Telegram commands."""
+        command = update.message.text.lower()
+        if command == '/analyze':
+            await self.send_analysis()
+        elif command == '/trade buy':
+            self.place_order('buy', 0.01)
+            await self.bot.send_message(chat_id=self.chat_id, text="BUY Order Placed.")
+        elif command == '/trade sell':
+            self.place_order('sell', 0.01)
+            await self.bot.send_message(chat_id=self.chat_id, text="SELL Order Placed.")
+
+    def place_order(self, side, quantity):
+        """Execute buy or sell order."""
+        try:
+            order = self.exchange.create_market_order(self.symbol, side, quantity)
+            logging.info(f"Placed {side.upper()} order: {order}")
+            return order
+        except Exception as e:
+            logging.error(f"Error placing order: {e}")
+            return None
 
 if __name__ == "__main__":
-       from dotenv import load_dotenv
-            import os
-            load_dotenv()
-
-             api_key = os.getenv("api_key")
-             api_secret = os.getenv("api_secret")
-             telegram_token = os.getenv("telegram_token")
-             chat_id = os.getenv("chat_id"
-
-        bot = BinanceTradingBot(api_key, api_secret, telegram_token, chat_id, paper_trading=True)
-        asyncio.run(bot.run())
-
+    load_dotenv()
+    api_key = os.getenv("API_KEY")
+    api_secret = os.getenv("API_SECRET")
+    telegram_token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
+    
+    bot = AdvancedBNBBot(api_key, api_secret, telegram_token, chat_id)
+    asyncio.run(bot.send_analysis())
