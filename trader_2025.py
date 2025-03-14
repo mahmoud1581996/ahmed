@@ -1,82 +1,71 @@
 import os
-import logging
 import ccxt
+import json
+import logging
 import telegram
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 from dotenv import load_dotenv
-import matplotlib.pyplot as plt
-import numpy as np
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
 # Load environment variables
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
-EXCHANGE_NAME = "binance"  # Set your exchange
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# Initialize exchange
-exchange = getattr(ccxt, EXCHANGE_NAME)({
-    'apiKey': API_KEY,
-    'secret': API_SECRET,
-    'options': {'defaultType': 'spot'}
+# Initialize Binance API
+exchange = ccxt.binance({
+    'apiKey': BINANCE_API_KEY,
+    'secret': BINANCE_SECRET_KEY,
+    'enableRateLimit': True
 })
 
-# Logging setup
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Initialize Telegram bot
+bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
 
-# Start command
+# Logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger()
+
+def get_bnb_price():
+    """Fetches the latest BNB price."""
+    ticker = exchange.fetch_ticker('BNB/USDT')
+    return ticker['last']
+
+def send_telegram_message(message):
+    """Sends a message to Telegram chat."""
+    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+
 def start(update, context):
-    update.message.reply_text("Welcome to BNB Trading Bot! Use /help for commands.")
+    update.message.reply_text("Hello! I'm your Binance BNB trading bot! Use /price to check BNB price.")
 
-# Help command
-def help_command(update, context):
-    update.message.reply_text(\"\"\"Available commands:
-    /analytics - Get advanced trading analytics
-    /visualize - Get BNB price chart
-    /order <price> <qty> - Place a limit order
-    \"\"\")
+def get_price(update, context):
+    price = get_bnb_price()
+    update.message.reply_text(f"BNB Current Price: ${price}")
 
+def buy_bnb(update, context):
+    amount = 0.1  # Adjust as needed
+    order = exchange.create_market_buy_order('BNB/USDT', amount)
+    update.message.reply_text(f"Buy Order Executed: {order}")
+    send_telegram_message(f"✅ Bought {amount} BNB at market price.")
 
-# Advanced analytics
-def analytics(update, context):
-    ticker = exchange.fetch_ticker("BNB/USDT")
-    price = ticker['last']
-    spread = ticker['ask'] - ticker['bid']
-    update.message.reply_text(f"BNB Price: {price} USDT\nSpread: {spread} USDT")
+def sell_bnb(update, context):
+    amount = 0.1  # Adjust as needed
+    order = exchange.create_market_sell_order('BNB/USDT', amount)
+    update.message.reply_text(f"Sell Order Executed: {order}")
+    send_telegram_message(f"❌ Sold {amount} BNB at market price.")
 
-# Visualization
-def visualize(update, context):
-    prices = np.random.normal(300, 50, 100)  # Simulated price data
-    plt.figure()
-    plt.plot(prices, label='BNB Price')
-    plt.legend()
-    plt.xlabel('Time')
-    plt.ylabel('Price (USDT)')
-    plt.title('BNB Price Chart')
-    plt.grid()
-    plt.savefig("chart.png")
-    update.message.reply_photo(photo=open("chart.png", "rb"))
-    os.remove("chart.png")
-
-# Place order
-def place_order(update, context):
-    try:
-        args = context.args
-        price, qty = float(args[0]), float(args[1])
-        order = exchange.create_limit_buy_order("BNB/USDT", qty, price)
-        update.message.reply_text(f"Order placed: {order}")
-    except Exception as e:
-        update.message.reply_text(f"Error: {e}")
-
-# Main function
-if __name__ == "__main__":
-    updater = Updater(TELEGRAM_TOKEN, use_context=True)
+def main():
+    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
+    
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("help", help_command))
-    dp.add_handler(CommandHandler("analytics", analytics))
-    dp.add_handler(CommandHandler("visualize", visualize))
-    dp.add_handler(CommandHandler("order", place_order, pass_args=True))
+    dp.add_handler(CommandHandler("price", get_price))
+    dp.add_handler(CommandHandler("buy", buy_bnb))
+    dp.add_handler(CommandHandler("sell", sell_bnb))
+    
     updater.start_polling()
     updater.idle()
+
+if __name__ == "__main__":
+    main()
