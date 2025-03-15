@@ -1,11 +1,11 @@
 import os
 import logging
 import asyncio
-from datetime import datetime
 import ccxt
 import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
+from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
@@ -22,10 +22,7 @@ BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("bot_activity.log"),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler("bot_activity.log"), logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
 
@@ -37,12 +34,12 @@ exchange = ccxt.binance({
     "options": {"defaultType": "spot"}
 })
 
-# Store Selected Pairs Per User
+# Store User Pair Selection
 selected_pair = {}
 
 # /start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Bot ready! Use /select_pair to choose a crypto pair.")
+    await update.message.reply_text("👋 Welcome! Use /select_pair to choose a crypto pair.")
 
 # /select_pair command - Allows predefined & manual input
 async def select_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,15 +49,16 @@ async def select_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔍 Enter Manually", callback_data="manual_pair")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📊 Please select a trading pair:", reply_markup=reply_markup)
+    await update.message.reply_text("📊 Select a trading pair:", reply_markup=reply_markup)
 
 # Handle Pair Selection and Manual Entry
 async def handle_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    user_id = query.from_user.id
 
     if query.data == "manual_pair":
-        await query.edit_message_text("🔍 Please type the pair (e.g., `ADA/USDT`) into the chat.")
+        await query.edit_message_text("🔍 Please type the trading pair (e.g., `ADA/USDT`) into the chat.")
         return
 
     pair = query.data.replace("pair_", "")
@@ -68,7 +66,7 @@ async def handle_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
 # Handle User Input for Manual Pair Entry
 async def manual_pair_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pair = update.message.text.upper()
+    pair = update.message.text.upper().strip()  # Convert input to uppercase
     await validate_and_set_pair(update, context, pair)
 
 # Validate & Set the Trading Pair
@@ -84,10 +82,10 @@ async def validate_and_set_pair(update: Update, context: ContextTypes.DEFAULT_TY
             advice, fig = generate_analytics(df, pair)
             await send_chart_with_buttons(context, user_id, advice, fig, df, pair)
         else:
-            await update.message.reply_text("❌ Invalid pair! Please enter a valid Binance trading pair (e.g., BNB/USDT).")
+            await update.message.reply_text("❌ Invalid pair! Enter a valid Binance pair (e.g., BNB/USDT).")
     except Exception as e:
         logger.error(f"Error validating pair: {e}")
-        await update.message.reply_text("⚠️ Error connecting to Binance. Please try again later.")
+        await update.message.reply_text("⚠️ Error connecting to Binance. Try again later.")
 
 # Fetch OHLCV Data from Binance
 def fetch_ohlcv(pair):
@@ -106,6 +104,15 @@ def generate_analytics(df, pair):
     df['EMA50'] = df['close'].ewm(span=50).mean()
     df['RSI'] = calculate_rsi(df['close'])
 
+    # MACD Calculation
+    df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+
+    # Bollinger Bands
+    df['BB_MID'] = df['close'].rolling(window=20).mean()
+    df['BB_STD'] = df['close'].rolling(window=20).std()
+    df['BB_UPPER'] = df['BB_MID'] + (df['BB_STD'] * 2)
+    df['BB_LOWER'] = df['BB_MID'] - (df['BB_STD'] * 2)
+
     advice = "HOLD"
     if df['RSI'].iloc[-1] < 30 and df['EMA20'].iloc[-1] > df['EMA50'].iloc[-1]:
         advice = "🔥 STRONG BUY"
@@ -116,6 +123,8 @@ def generate_analytics(df, pair):
     ax.plot(df['timestamp'], df['close'], label='Price', linewidth=1.5)
     ax.plot(df['timestamp'], df['EMA20'], label='EMA20', linestyle="dashed")
     ax.plot(df['timestamp'], df['EMA50'], label='EMA50', linestyle="dashed")
+    ax.fill_between(df['timestamp'], df['BB_LOWER'], df['BB_UPPER'], color='gray', alpha=0.2, label="Bollinger Bands")
+
     ax.set_title(f'{pair} Analysis | RSI: {df["RSI"].iloc[-1]:.2f} | Advice: {advice}')
     ax.legend()
     plt.xticks(rotation=45)
@@ -141,32 +150,11 @@ async def send_chart_with_buttons(context, user_id, advice, fig, df, pair):
     buf.seek(0)
     plt.close(fig)
 
-    keyboard = [
-        [InlineKeyboardButton("✅ Confirm Buy", callback_data="confirm_buy"),
-         InlineKeyboardButton("❌ Confirm Sell", callback_data="confirm_sell")],
-        [InlineKeyboardButton("🔄 Change Pair", callback_data="change_pair")]
-    ]
-    markup = InlineKeyboardMarkup(keyboard)
-
-    message_text = f"📊 **Crypto Market Report for {pair}**\n\n" \
-                   f"🎯 **Advice:** {advice}\n\n" \
-                   f"📈 **EMA20:** {df['EMA20'].iloc[-1]:.2f}\n" \
-                   f"📉 **EMA50:** {df['EMA50'].iloc[-1]:.2f}\n" \
-                   f"📊 **RSI:** {df['RSI'].iloc[-1]:.2f}\n"
-
-    await context.bot.send_photo(chat_id=user_id, photo=buf, caption=message_text, reply_markup=markup, parse_mode='Markdown')
-
-# Handle Trade Confirmation & Pair Change
-async def trade_and_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    if query.data == "change_pair":
-        await select_pair(update, context)
-    elif query.data == "confirm_buy":
-        await query.edit_message_caption(caption="🟢 BUY Confirmed")
-    elif query.data == "confirm_sell":
-        await query.edit_message_caption(caption="🔴 SELL Confirmed")
+    keyboard = [[InlineKeyboardButton("✅ Confirm Buy", callback_data="confirm_buy"),
+                 InlineKeyboardButton("❌ Confirm Sell", callback_data="confirm_sell")],
+                [InlineKeyboardButton("🔄 Change Pair", callback_data="change_pair")]]
+    
+    await context.bot.send_photo(chat_id=user_id, photo=buf, caption=f"📊 {pair} Analysis:\n🎯 **{advice}**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # Main Function
 def main():
@@ -174,7 +162,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("select_pair", select_pair))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manual_pair_entry))
-    app.add_handler(CallbackQueryHandler(trade_and_pair_callback, pattern="^pair_|^confirm_|^change_pair$"))
+    app.add_handler(CallbackQueryHandler(handle_pair_callback, pattern="^pair_|^manual_pair$"))
 
     app.run_polling()
 
