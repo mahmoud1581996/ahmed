@@ -1,3 +1,4 @@
+import os
 import asyncio
 import logging
 import ccxt
@@ -9,13 +10,31 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dotenv import load_dotenv
 
-# Telegram & Binance Config
-TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+# ✅ Load Environment Variables from .env File
+load_dotenv("/home/ec2-user/.env")  # Change this path if needed
+
+# ✅ Retrieve API Credentials
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
+
+# ✅ Validate Token Before Proceeding
+if not TELEGRAM_BOT_TOKEN:
+    raise ValueError("❌ ERROR: Missing TELEGRAM_BOT_TOKEN in .env file")
+
+# ✅ Initialize Telegram Bot
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher(bot, storage=MemoryStorage())
 
-binance = ccxt.binance()
+# ✅ Initialize Binance API
+binance = ccxt.binance({
+    'apiKey': BINANCE_API_KEY,
+    'secret': BINANCE_API_SECRET,
+    'enableRateLimit': True
+})
+
 selected_pair = "BTC/USDT"
 previous_price = None
 scheduler = AsyncIOScheduler()
