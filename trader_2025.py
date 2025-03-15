@@ -1,69 +1,150 @@
 import os
-import ccxt
-import json
 import logging
-import telegram
+import asyncio
+from datetime import datetime
+import ccxt
+import pandas as pd
+import matplotlib.pyplot as plt
+from io import BytesIO
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
 from dotenv import load_dotenv
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
-# Load environment variables
+# Load .env
 load_dotenv()
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+
+# ENV Vars
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-
-# Initialize Binance API
-exchange = ccxt.binance({
-    'apiKey': BINANCE_API_KEY,
-    'secret': BINANCE_SECRET_KEY,
-    'enableRateLimit': True
-})
-
-# Initialize Telegram bot
-bot = telegram.Bot(token=TELEGRAM_BOT_TOKEN)
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
+CHAT_ID = os.getenv("CHAT_ID")
 
 # Logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger()
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-def get_bnb_price():
-    """Fetches the latest BNB price."""
-    ticker = exchange.fetch_ticker('BNB/USDT')
-    return ticker['last']
+# Binance Init
+exchange = ccxt.binance({
+    "apiKey": BINANCE_API_KEY,
+    "secret": BINANCE_API_SECRET,
+    "enableRateLimit": True,
+    "options": {"defaultType": "spot"}
+})
 
-def send_telegram_message(message):
-    """Sends a message to Telegram chat."""
-    bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message)
+# Globals
+selected_pair = {}
 
-def start(update, context):
-    update.message.reply_text("Hello! I'm your Binance BNB trading bot! Use /price to check BNB price.")
+# Command: /start
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("👋 Bot ready! Use /select_pair to choose a crypto pair.")
 
-def get_price(update, context):
-    price = get_bnb_price()
-    update.message.reply_text(f"BNB Current Price: ${price}")
+# Command: /select_pair
+def select_pair(update: Update, context: CallbackContext):
+    reply_keyboard = [['BNB/USDT', 'BTC/USDT', 'ETH/USDT'], ['XRP/USDT', 'SOL/USDT']]
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton(pair, callback_data=f"pair_{pair}") for pair in row]
+        for row in reply_keyboard
+    ])
+    update.message.reply_text("Please select a trading pair:", reply_markup=markup)
 
-def buy_bnb(update, context):
-    amount = 0.1  # Adjust as needed
-    order = exchange.create_market_buy_order('BNB/USDT', amount)
-    update.message.reply_text(f"Buy Order Executed: {order}")
-    send_telegram_message(f"✅ Bought {amount} BNB at market price.")
+# Pair Selection Callback
+def handle_pair_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+    pair = query.data.replace("pair_", "")
+    selected_pair[query.from_user.id] = pair
+    query.edit_message_text(f"✅ Pair selected: {pair}. Analytics will now be sent every 10 min.")
 
-def sell_bnb(update, context):
-    amount = 0.1  # Adjust as needed
-    order = exchange.create_market_sell_order('BNB/USDT', amount)
-    update.message.reply_text(f"Sell Order Executed: {order}")
-    send_telegram_message(f"❌ Sold {amount} BNB at market price.")
+# Scheduled Job
+def scheduled_analytics(context: CallbackContext):
+    for user_id, pair in selected_pair.items():
+        df = fetch_ohlcv(pair)
+        advice, fig = generate_analytics(df, pair)
+        send_chart_with_buttons(context.bot, user_id, advice, fig)
 
+# Fetch OHLCV Data
+def fetch_ohlcv(pair):
+    ohlcv = exchange.fetch_ohlcv(pair, timeframe='15m', limit=50)
+    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    return df
+
+# Generate Analytics + Plot
+def generate_analytics(df, pair):
+    df['EMA20'] = df['close'].ewm(span=20).mean()
+    df['EMA50'] = df['close'].ewm(span=50).mean()
+    df['RSI'] = calculate_rsi(df['close'])
+    df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+
+    # Advice Logic
+    advice = "HOLD"
+    if df['RSI'].iloc[-1] < 30 and df['EMA20'].iloc[-1] > df['EMA50'].iloc[-1]:
+        advice = "BUY"
+    elif df['RSI'].iloc[-1] > 70 and df['EMA20'].iloc[-1] < df['EMA50'].iloc[-1]:
+        advice = "SELL"
+
+    # Plot
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+    ax1.plot(df['timestamp'], df['close'], label='Price', linewidth=1.5)
+    ax1.plot(df['timestamp'], df['EMA20'], label='EMA20')
+    ax1.plot(df['timestamp'], df['EMA50'], label='EMA50')
+    ax1.set_title(f'{pair} Price + EMA | RSI: {df["RSI"].iloc[-1]:.2f} | Advice: {advice}')
+    ax1.legend()
+    plt.tight_layout()
+
+    return advice, fig
+
+# RSI Calculation
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+# Send chart + buttons
+def send_chart_with_buttons(bot, user_id, advice, fig):
+    buf = BytesIO()
+    fig.savefig(buf, format='png')
+    buf.seek(0)
+    plt.close(fig)
+    keyboard = [[
+        InlineKeyboardButton("✅ Confirm Buy", callback_data="confirm_buy"),
+        InlineKeyboardButton("❌ Confirm Sell", callback_data="confirm_sell")
+    ]]
+    markup = InlineKeyboardMarkup(keyboard)
+    bot.send_photo(chat_id=user_id, photo=buf, caption=f"📊 Advice: {advice}", reply_markup=markup)
+
+# Handle trade confirmation
+def trade_callback(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+    action = query.data
+    pair = selected_pair.get(query.from_user.id)
+
+    if action == "confirm_buy":
+        query.edit_message_caption(caption=f"🟢 BUY Confirmed for {pair}")
+        # You can place Binance buy order here.
+    elif action == "confirm_sell":
+        query.edit_message_caption(caption=f"🔴 SELL Confirmed for {pair}")
+        # You can place Binance sell order here.
+
+# MAIN
 def main():
     updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
-    
+
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("price", get_price))
-    dp.add_handler(CommandHandler("buy", buy_bnb))
-    dp.add_handler(CommandHandler("sell", sell_bnb))
-    
+    dp.add_handler(CommandHandler("select_pair", select_pair))
+    dp.add_handler(CallbackQueryHandler(handle_pair_callback, pattern="^pair_"))
+    dp.add_handler(CallbackQueryHandler(trade_callback, pattern="^confirm_"))
+
+    job_queue = updater.job_queue
+    job_queue.run_repeating(scheduled_analytics, interval=600, first=10)  # every 10 minutes
+
     updater.start_polling()
     updater.idle()
 
