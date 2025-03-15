@@ -20,7 +20,14 @@ BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 CHAT_ID = os.getenv("CHAT_ID")
 
 # Logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot_activity.log"),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
 # Binance Init
@@ -36,6 +43,7 @@ selected_pair = {}
 
 # Command: /start
 def start(update: Update, context: CallbackContext):
+    logger.info("/start command received")
     update.message.reply_text("👋 Bot ready! Use /select_pair to choose a crypto pair.")
 
 # Command: /select_pair
@@ -53,21 +61,30 @@ def handle_pair_callback(update: Update, context: CallbackContext):
     query.answer()
     pair = query.data.replace("pair_", "")
     selected_pair[query.from_user.id] = pair
+    logger.info(f"Pair selected by user {query.from_user.id}: {pair}")
     query.edit_message_text(f"✅ Pair selected: {pair}. Analytics will now be sent every 10 min.")
 
 # Scheduled Job
 def scheduled_analytics(context: CallbackContext):
     for user_id, pair in selected_pair.items():
-        df = fetch_ohlcv(pair)
-        advice, fig = generate_analytics(df, pair)
-        send_chart_with_buttons(context.bot, user_id, advice, fig)
+        try:
+            df = fetch_ohlcv(pair)
+            advice, fig = generate_analytics(df, pair)
+            send_chart_with_buttons(context.bot, user_id, advice, fig)
+            logger.info(f"Analytics sent to user {user_id} for {pair}")
+        except Exception as e:
+            logger.error(f"Error during analytics for {pair}: {e}")
 
 # Fetch OHLCV Data
 def fetch_ohlcv(pair):
-    ohlcv = exchange.fetch_ohlcv(pair, timeframe='15m', limit=50)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    return df
+    try:
+        ohlcv = exchange.fetch_ohlcv(pair, timeframe='15m', limit=50)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        logger.error(f"Error fetching OHLCV for {pair}: {e}")
+        raise
 
 # Generate Analytics + Plot
 def generate_analytics(df, pair):
@@ -76,14 +93,12 @@ def generate_analytics(df, pair):
     df['RSI'] = calculate_rsi(df['close'])
     df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
 
-    # Advice Logic
     advice = "HOLD"
     if df['RSI'].iloc[-1] < 30 and df['EMA20'].iloc[-1] > df['EMA50'].iloc[-1]:
         advice = "BUY"
     elif df['RSI'].iloc[-1] > 70 and df['EMA20'].iloc[-1] < df['EMA50'].iloc[-1]:
         advice = "SELL"
 
-    # Plot
     fig, ax1 = plt.subplots(figsize=(10, 6))
     ax1.plot(df['timestamp'], df['close'], label='Price', linewidth=1.5)
     ax1.plot(df['timestamp'], df['EMA20'], label='EMA20')
@@ -107,16 +122,19 @@ def calculate_rsi(series, period=14):
 
 # Send chart + buttons
 def send_chart_with_buttons(bot, user_id, advice, fig):
-    buf = BytesIO()
-    fig.savefig(buf, format='png')
-    buf.seek(0)
-    plt.close(fig)
-    keyboard = [[
-        InlineKeyboardButton("✅ Confirm Buy", callback_data="confirm_buy"),
-        InlineKeyboardButton("❌ Confirm Sell", callback_data="confirm_sell")
-    ]]
-    markup = InlineKeyboardMarkup(keyboard)
-    bot.send_photo(chat_id=user_id, photo=buf, caption=f"📊 Advice: {advice}", reply_markup=markup)
+    try:
+        buf = BytesIO()
+        fig.savefig(buf, format='png')
+        buf.seek(0)
+        plt.close(fig)
+        keyboard = [[
+            InlineKeyboardButton("✅ Confirm Buy", callback_data="confirm_buy"),
+            InlineKeyboardButton("❌ Confirm Sell", callback_data="confirm_sell")
+        ]]
+        markup = InlineKeyboardMarkup(keyboard)
+        bot.send_photo(chat_id=user_id, photo=buf, caption=f"📊 Advice: {advice}", reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Error sending chart to user {user_id}: {e}")
 
 # Handle trade confirmation
 def trade_callback(update: Update, context: CallbackContext):
@@ -127,10 +145,10 @@ def trade_callback(update: Update, context: CallbackContext):
 
     if action == "confirm_buy":
         query.edit_message_caption(caption=f"🟢 BUY Confirmed for {pair}")
-        # You can place Binance buy order here.
+        logger.info(f"User {query.from_user.id} confirmed BUY for {pair}")
     elif action == "confirm_sell":
         query.edit_message_caption(caption=f"🔴 SELL Confirmed for {pair}")
-        # You can place Binance sell order here.
+        logger.info(f"User {query.from_user.id} confirmed SELL for {pair}")
 
 # MAIN
 def main():
@@ -143,7 +161,7 @@ def main():
     dp.add_handler(CallbackQueryHandler(trade_callback, pattern="^confirm_"))
 
     job_queue = updater.job_queue
-    job_queue.run_repeating(scheduled_analytics, interval=600, first=10)  # every 10 minutes
+    job_queue.run_repeating(scheduled_analytics, interval=600, first=10)
 
     updater.start_polling()
     updater.idle()
