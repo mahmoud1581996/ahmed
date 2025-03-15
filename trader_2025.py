@@ -178,12 +178,24 @@ def send_chart_with_buttons(bot, user_id, advice, fig):
         fig.savefig(buf, format='png')
         buf.seek(0)
         plt.close(fig)
+
+        # Inline Buttons for Manual Trading Confirmation
         keyboard = [[
             InlineKeyboardButton("✅ Confirm Buy", callback_data="confirm_buy"),
             InlineKeyboardButton("❌ Confirm Sell", callback_data="confirm_sell")
         ]]
         markup = InlineKeyboardMarkup(keyboard)
-        bot.send_photo(chat_id=user_id, photo=buf, caption=f"📊 Advice: {advice}", reply_markup=markup)
+
+        # Send Message with Detailed Analytics
+        message_text = f"📊 **Crypto Market Report**\n\n" \
+                       f"🎯 **Advice:** {advice}\n\n" \
+                       f"📈 **EMA20:** {df['EMA20'].iloc[-1]:.2f}\n" \
+                       f"📉 **EMA50:** {df['EMA50'].iloc[-1]:.2f}\n" \
+                       f"📊 **RSI:** {df['RSI'].iloc[-1]:.2f}\n" \
+                       f"📉 **MACD:** {df['MACD'].iloc[-1]:.2f}\n" \
+                       f"📊 **Volume Change:** {'🔺' if df['Volume_Surge'].iloc[-1] else '🔻'}\n"
+
+        bot.send_photo(chat_id=user_id, photo=buf, caption=message_text, reply_markup=markup, parse_mode='Markdown')
     except Exception as e:
         logger.error(f"Error sending chart to user {user_id}: {e}")
 
