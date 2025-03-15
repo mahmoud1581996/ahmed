@@ -56,13 +56,26 @@ def select_pair(update: Update, context: CallbackContext):
     update.message.reply_text("Please select a trading pair:", reply_markup=markup)
 
 # Pair Selection Callback
+# Pair Selection Callback - Immediate Analytics
 def handle_pair_callback(update: Update, context: CallbackContext):
     query = update.callback_query
     query.answer()
     pair = query.data.replace("pair_", "")
-    selected_pair[query.from_user.id] = pair
-    logger.info(f"Pair selected by user {query.from_user.id}: {pair}")
-    query.edit_message_text(f"✅ Pair selected: {pair}. Analytics will now be sent every 10 min.")
+    user_id = query.from_user.id
+    selected_pair[user_id] = pair
+    logger.info(f"Pair selected by user {user_id}: {pair}")
+
+    # Notify user and send analytics immediately
+    query.edit_message_text(f"✅ Pair selected: {pair}. Fetching analytics now...")
+
+    try:
+        df = fetch_ohlcv(pair)
+        advice, fig = generate_analytics(df, pair)
+        send_chart_with_buttons(context.bot, user_id, advice, fig)
+        logger.info(f"Immediate analytics sent to user {user_id} for {pair}")
+    except Exception as e:
+        logger.error(f"Error during immediate analytics for {pair}: {e}")
+
 
 # Scheduled Job
 def scheduled_analytics(context: CallbackContext):
