@@ -12,13 +12,34 @@ from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
-# ✅ Load Environment Variables from .env File
-load_dotenv("/home/ec2-user/.env")  # Change this path if needed
+import os
+from dotenv import load_dotenv
 
-# ✅ Retrieve API Credentials
+# ✅ Explicitly specify the .env path
+env_path = "/home/ec2-user/.env"
+if os.path.exists(env_path):
+    load_dotenv(env_path)
+else:
+    raise FileNotFoundError(f"❌ ERROR: .env file not found at {env_path}")
+
+# ✅ Load variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
+BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+# ✅ Debugging: Print values (ONLY for testing, remove in production)
+print(f"TELEGRAM_BOT_TOKEN: {TELEGRAM_BOT_TOKEN}")
+print(f"BINANCE_API_KEY: {BINANCE_API_KEY}")
+print(f"BINANCE_SECRET_KEY: {BINANCE_SECRET_KEY}")
+print(f"TELEGRAM_CHAT_ID: {TELEGRAM_CHAT_ID}")
+
+# ✅ Ensure the variables are loaded
+if not TELEGRAM_BOT_TOKEN:
+    raise ValueError("❌ ERROR: TELEGRAM_BOT_TOKEN is missing! Check your .env file.")
+
+# Continue with bot initialization...
+
 
 # ✅ Validate Token Before Proceeding
 if not TELEGRAM_BOT_TOKEN:
