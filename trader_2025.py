@@ -100,24 +100,62 @@ def fetch_ohlcv(pair):
         raise
 
 # Generate Analytics + Plot
+# More Advanced Analytics with Bollinger Bands, Trend Detection, and Support/Resistance Levels
 def generate_analytics(df, pair):
+    # Calculate Moving Averages
     df['EMA20'] = df['close'].ewm(span=20).mean()
     df['EMA50'] = df['close'].ewm(span=50).mean()
+
+    # RSI Calculation
     df['RSI'] = calculate_rsi(df['close'])
+
+    # MACD Calculation
     df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
 
-    advice = "HOLD"
-    if df['RSI'].iloc[-1] < 30 and df['EMA20'].iloc[-1] > df['EMA50'].iloc[-1]:
-        advice = "BUY"
-    elif df['RSI'].iloc[-1] > 70 and df['EMA20'].iloc[-1] < df['EMA50'].iloc[-1]:
-        advice = "SELL"
+    # Bollinger Bands
+    df['BB_MID'] = df['close'].rolling(window=20).mean()
+    df['BB_STD'] = df['close'].rolling(window=20).std()
+    df['BB_UPPER'] = df['BB_MID'] + (df['BB_STD'] * 2)
+    df['BB_LOWER'] = df['BB_MID'] - (df['BB_STD'] * 2)
 
-    fig, ax1 = plt.subplots(figsize=(10, 6))
-    ax1.plot(df['timestamp'], df['close'], label='Price', linewidth=1.5)
-    ax1.plot(df['timestamp'], df['EMA20'], label='EMA20')
-    ax1.plot(df['timestamp'], df['EMA50'], label='EMA50')
-    ax1.set_title(f'{pair} Price + EMA | RSI: {df["RSI"].iloc[-1]:.2f} | Advice: {advice}')
-    ax1.legend()
+    # Support & Resistance (Simple Highs & Lows)
+    df['Support'] = df['low'].rolling(window=20).min()
+    df['Resistance'] = df['high'].rolling(window=20).max()
+
+    # Volume Surge Alert
+    df['Volume_Surge'] = df['volume'] > df['volume'].rolling(window=20).mean() * 1.5
+
+    # Determine Trading Advice
+    latest_rsi = df['RSI'].iloc[-1]
+    latest_macd = df['MACD'].iloc[-1]
+    latest_price = df['close'].iloc[-1]
+    latest_volume_surge = df['Volume_Surge'].iloc[-1]
+    latest_ema20 = df['EMA20'].iloc[-1]
+    latest_ema50 = df['EMA50'].iloc[-1]
+    latest_bb_upper = df['BB_UPPER'].iloc[-1]
+    latest_bb_lower = df['BB_LOWER'].iloc[-1]
+
+    advice = "HOLD"
+
+    if latest_rsi < 30 and latest_macd > 0 and latest_ema20 > latest_ema50 and latest_price < latest_bb_lower:
+        advice = "🔥 STRONG BUY - Oversold with trend reversal"
+    elif latest_rsi > 70 and latest_macd < 0 and latest_ema20 < latest_ema50 and latest_price > latest_bb_upper:
+        advice = "🚨 STRONG SELL - Overbought with downtrend starting"
+    elif latest_volume_surge:
+        advice = "⚠️ CAUTION - Unusual volume detected, possible trend shift"
+    
+    # Plotting Chart
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(df['timestamp'], df['close'], label='Price', linewidth=1.5, color='blue')
+    ax.plot(df['timestamp'], df['EMA20'], label='EMA20', linestyle="dashed", color="orange")
+    ax.plot(df['timestamp'], df['EMA50'], label='EMA50', linestyle="dashed", color="red")
+    ax.fill_between(df['timestamp'], df['BB_LOWER'], df['BB_UPPER'], color='gray', alpha=0.2, label="Bollinger Bands")
+    ax.plot(df['timestamp'], df['Support'], linestyle='dotted', color="green", label="Support")
+    ax.plot(df['timestamp'], df['Resistance'], linestyle='dotted', color="red", label="Resistance")
+
+    ax.set_title(f'{pair} Analysis | RSI: {latest_rsi:.2f} | Advice: {advice}')
+    ax.legend()
+    plt.xticks(rotation=45)
     plt.tight_layout()
 
     return advice, fig
