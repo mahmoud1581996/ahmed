@@ -6,159 +6,165 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
 from datetime import datetime
-import pytz  # Import pytz
+import pytz
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
-# Ensure pytz is used for timezone configuration
-os.environ["TZ"] = "UTC"
-utc = pytz.utc  # Define UTC timezone
+# Load environment variables
+load_dotenv()
 
-# Binance API Setup
+# Telegram & Binance API Keys
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-class CryptoAnalyticsBot:
-    def __init__(self):
-        self.app = ApplicationBuilder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
-        self.exchange = ccxt.binance({
-            'enableRateLimit': True,
-            'options': {'adjustForTimeDifference': True}
-        })
-        self.selected_pair = {}  # Stores user-selected pairs
-        self._configure_handlers()
-        self._setup_logging()
+# Configure Logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+    handlers=[
+        logging.FileHandler("bot_analytics.log"),
+        logging.StreamHandler()
+    ]
+)
 
-    def _configure_handlers(self):
-        handlers = [
-            CommandHandler("start", self._start_handler),
-            CommandHandler("select_pair", self._display_pair_selection),
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self._manual_pair_handler),
-            CallbackQueryHandler(self._button_handler)
-        ]
-        for handler in handlers:
-            self.app.add_handler(handler)
+# Initialize Binance API
+exchange = ccxt.binance({
+    'enableRateLimit': True,
+    'options': {'adjustForTimeDifference': True}
+})
 
-    def _setup_logging(self):
-        logging.basicConfig(
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-            level=logging.INFO,
-            handlers=[
-                logging.FileHandler("bot_analytics.log"),
-                logging.StreamHandler()
-            ]
-        )
+# Store Selected Pairs for Users
+selected_pair = {}
 
-    async def _start_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await self._display_pair_selection(update)
+# Initialize Scheduler
+scheduler = AsyncIOScheduler(timezone=pytz.utc)
 
-    async def _display_pair_selection(self, update: Update):
-        """Display available trading pairs and allow manual entry"""
-        pairs = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT"]
-        keyboard = [[InlineKeyboardButton(pair, callback_data=f"pair_{pair}")] for pair in pairs]
-        keyboard.append([InlineKeyboardButton("🔍 Enter Custom Pair", callback_data="custom_pair")])
-        
-        await update.message.reply_text(
-            "🔍 Select a Trading Pair or Enter a Custom One:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ Start command: Show trading pair selection """
+    await select_pair(update, context)
 
-    async def _button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query
-        await query.answer()
-        user_id = query.from_user.id
+async def select_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ Show predefined pairs & allow custom pair entry """
+    pairs = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XRP/USDT"]
+    keyboard = [[InlineKeyboardButton(pair, callback_data=f"pair_{pair}")] for pair in pairs]
+    keyboard.append([InlineKeyboardButton("🔍 Enter Custom Pair", callback_data="custom_pair")])
 
-        if query.data == "custom_pair":
-            await query.edit_message_text("✏️ Please type your custom trading pair (e.g., `ADA/USDT`).")
-            return
+    await update.message.reply_text(
+        "📊 Select a Trading Pair or Enter a Custom One:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-        pair = query.data.replace("pair_", "")
-        self.selected_pair[user_id] = pair
+async def handle_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ Handle pair selection from buttons """
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
 
-        await query.edit_message_text(f"✅ Selected Pair: {pair}. Fetching market data now...")
-        await self._send_analytics(update, user_id, pair)
+    if query.data == "custom_pair":
+        await query.edit_message_text("✏️ Please type your custom trading pair (e.g., `ADA/USDT`).")
+        return
 
-    async def _manual_pair_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle manually entered pairs"""
-        user_id = update.effective_user.id
-        pair = update.message.text.upper().strip()
+    pair = query.data.replace("pair_", "")
+    selected_pair[user_id] = pair
+    await query.edit_message_text(f"✅ Selected Pair: {pair}. Fetching market data now...")
+    await send_analytics(update, user_id, pair)
 
-        # Validate custom pair
-        markets = self.exchange.load_markets()
-        if pair in markets:
-            self.selected_pair[user_id] = pair
-            await update.message.reply_text(f"✅ Custom Pair Set: {pair}. Fetching market data...")
-            await self._send_analytics(update, user_id, pair)
-        else:
-            await update.message.reply_text("❌ Invalid pair! Please enter a valid Binance trading pair (e.g., BNB/USDT).")
+async def manual_pair_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """ Handle manually entered pairs """
+    user_id = update.effective_user.id
+    pair = update.message.text.upper().strip()
 
-    async def _send_analytics(self, update: Update, user_id, pair):
-        """Fetch market data, analyze, and send to user"""
-        try:
-            df = await asyncio.to_thread(self._fetch_ohlcv, pair)
-            analysis, fig = self._generate_analytics(df, pair)
-            await self._send_chart(update, user_id, analysis, fig, pair)
-        except Exception as e:
-            logging.error(f"Error fetching analytics for {pair}: {e}")
-            await update.message.reply_text("⚠️ Failed to fetch market data. Try again later.")
+    # Validate Pair
+    markets = exchange.load_markets()
+    if pair in markets:
+        selected_pair[user_id] = pair
+        await update.message.reply_text(f"✅ Custom Pair Set: {pair}. Fetching market data...")
+        await send_analytics(update, user_id, pair)
+    else:
+        await update.message.reply_text("❌ Invalid pair! Please enter a valid Binance trading pair (e.g., BNB/USDT).")
 
-    def _fetch_ohlcv(self, pair):
-        """Fetch OHLCV data from Binance"""
-        ohlcv = self.exchange.fetch_ohlcv(pair, timeframe="15m", limit=50)
-        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-        return df
+async def send_analytics(update: Update, user_id, pair):
+    """ Fetch market data, analyze, and send results """
+    try:
+        df = await asyncio.to_thread(fetch_ohlcv, pair)
+        analysis, fig = generate_analytics(df, pair)
+        await send_chart(update, user_id, analysis, fig, pair)
+    except Exception as e:
+        logging.error(f"Error fetching analytics for {pair}: {e}")
+        await update.message.reply_text("⚠️ Failed to fetch market data. Try again later.")
 
-    def _generate_analytics(self, df, pair):
-        """Perform technical analysis"""
-        df["EMA20"] = df["close"].ewm(span=20).mean()
-        df["EMA50"] = df["close"].ewm(span=50).mean()
-        df["RSI"] = self._calculate_rsi(df["close"])
+def fetch_ohlcv(pair):
+    """ Fetch OHLCV data from Binance """
+    ohlcv = exchange.fetch_ohlcv(pair, timeframe="15m", limit=50)
+    df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df
 
-        # Determine trend strength
-        trend = "Bullish" if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] else "Bearish"
-        advice = "HOLD"
-        if df["RSI"].iloc[-1] < 30:
-            advice = "BUY 📈 (Oversold)"
-        elif df["RSI"].iloc[-1] > 70:
-            advice = "SELL 📉 (Overbought)"
+def generate_analytics(df, pair):
+    """ Perform technical analysis """
+    df["EMA20"] = df["close"].ewm(span=20).mean()
+    df["EMA50"] = df["close"].ewm(span=50).mean()
+    df["RSI"] = calculate_rsi(df["close"])
 
-        # Create Chart
-        fig, ax = plt.subplots(figsize=(12, 6))
-        ax.plot(df["timestamp"], df["close"], label="Price", linewidth=1.5)
-        ax.plot(df["timestamp"], df["EMA20"], label="EMA20", linestyle="dashed", color="green")
-        ax.plot(df["timestamp"], df["EMA50"], label="EMA50", linestyle="dashed", color="red")
-        ax.set_title(f"{pair} | RSI: {df['RSI'].iloc[-1]:.2f} | Trend: {trend}")
-        ax.legend()
-        plt.xticks(rotation=45)
-        plt.tight_layout()
+    # MACD Calculation
+    df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
 
-        return advice, fig
+    # Bollinger Bands
+    df["BB_MID"] = df["close"].rolling(window=20).mean()
+    df["BB_STD"] = df["close"].rolling(window=20).std()
+    df["BB_UPPER"] = df["BB_MID"] + (df["BB_STD"] * 2)
+    df["BB_LOWER"] = df["BB_MID"] - (df["BB_STD"] * 2)
 
-    async def _send_chart(self, update: Update, user_id, advice, fig, pair):
-        """Send generated analytics chart and buttons"""
-        buf = BytesIO()
-        fig.savefig(buf, format="png")
-        buf.seek(0)
-        plt.close(fig)
+    trend = "Bullish" if df["EMA20"].iloc[-1] > df["EMA50"].iloc[-1] else "Bearish"
+    advice = "HOLD"
+    if df["RSI"].iloc[-1] < 30:
+        advice = "BUY 📈 (Oversold)"
+    elif df["RSI"].iloc[-1] > 70:
+        advice = "SELL 📉 (Overbought)"
 
-        keyboard = [
-            [InlineKeyboardButton("✅ Confirm Buy", callback_data="confirm_buy"),
-             InlineKeyboardButton("❌ Confirm Sell", callback_data="confirm_sell")],
-            [InlineKeyboardButton("🔄 Change Pair", callback_data="change_pair")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.plot(df["timestamp"], df["close"], label="Price", linewidth=1.5)
+    ax.plot(df["timestamp"], df["EMA20"], label="EMA20", linestyle="dashed", color="green")
+    ax.plot(df["timestamp"], df["EMA50"], label="EMA50", linestyle="dashed", color="red")
+    ax.set_title(f"{pair} | RSI: {df['RSI'].iloc[-1]:.2f} | Trend: {trend}")
+    ax.legend()
+    plt.xticks(rotation=45)
+    plt.tight_layout()
 
-        await update.message.reply_photo(
-            photo=buf, caption=f"📊 **{pair} Market Analysis**\n🎯 **Advice:** {advice}",
-            reply_markup=reply_markup, parse_mode="Markdown"
-        )
+    return advice, fig
 
-    def run(self):
-        """Start the bot"""
-        self.app.run_polling()
+async def send_chart(update: Update, user_id, advice, fig, pair):
+    """ Send analysis chart with action buttons """
+    buf = BytesIO()
+    fig.savefig(buf, format="png")
+    buf.seek(0)
+    plt.close(fig)
+
+    keyboard = [
+        [InlineKeyboardButton("✅ Confirm Buy", callback_data="confirm_buy"),
+         InlineKeyboardButton("❌ Confirm Sell", callback_data="confirm_sell")],
+        [InlineKeyboardButton("🔄 Change Pair", callback_data="change_pair")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_photo(
+        photo=buf, caption=f"📊 **{pair} Market Analysis**\n🎯 **Advice:** {advice}",
+        reply_markup=reply_markup, parse_mode="Markdown"
+    )
+
+def main():
+    """ Start the bot """
+    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("select_pair", select_pair))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manual_pair_handler))
+    app.add_handler(CallbackQueryHandler(handle_pair_callback, pattern="^pair_|^custom_pair$"))
+
+    scheduler.start()
+    app.run_polling()
 
 if __name__ == "__main__":
-    bot = CryptoAnalyticsBot()
-    bot.run()
+    main()
