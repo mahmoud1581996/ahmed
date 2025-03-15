@@ -6,12 +6,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from io import BytesIO
 from datetime import datetime
+import pytz  # Import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
-# Load Environment Variables
-load_dotenv()
+# Ensure pytz is used for timezone configuration
+os.environ["TZ"] = "UTC"
+utc = pytz.utc  # Define UTC timezone
 
 # Binance API Setup
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
