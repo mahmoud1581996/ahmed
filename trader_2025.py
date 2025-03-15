@@ -13,15 +13,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
-# ✅ Load Environment Variables
+# ✅ Load environment variables
 load_dotenv()
 
-# ✅ Telegram & Binance API Keys
+# ✅ API Keys
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-# ✅ Configure Logging
+# ✅ Logging Configuration
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -40,8 +40,9 @@ exchange = ccxt.binance({
 # ✅ Store Selected Pairs for Users
 selected_pair = {}
 
-# ✅ Fix APScheduler Timezone Issue
-scheduler = AsyncIOScheduler(timezone=astimezone(pytz.timezone("UTC")))
+# ✅ Fix Timezone Issue
+TIMEZONE = pytz.timezone("UTC")
+scheduler = AsyncIOScheduler(timezone=astimezone(TIMEZONE))
 scheduler.start()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,7 +56,7 @@ async def select_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("🔍 Enter Custom Pair", callback_data="custom_pair")])
 
     await update.message.reply_text(
-        "📊 Select a Trading Pair or Enter a Custom One:",
+        "📊 Select a trading pair or enter a custom one:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -110,11 +111,7 @@ def generate_analytics(df, pair):
     df["EMA20"] = df["close"].ewm(span=20).mean()
     df["EMA50"] = df["close"].ewm(span=50).mean()
     df["RSI"] = calculate_rsi(df["close"])
-
-    # MACD Calculation
     df["MACD"] = df["close"].ewm(span=12).mean() - df["close"].ewm(span=26).mean()
-
-    # Bollinger Bands
     df["BB_MID"] = df["close"].rolling(window=20).mean()
     df["BB_STD"] = df["close"].rolling(window=20).std()
     df["BB_UPPER"] = df["BB_MID"] + (df["BB_STD"] * 2)
