@@ -8,11 +8,12 @@ from io import BytesIO
 from datetime import datetime
 import pytz
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.util import astimezone
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
-# Load environment variables
+# Load Environment Variables
 load_dotenv()
 
 # Telegram & Binance API Keys
@@ -39,8 +40,9 @@ exchange = ccxt.binance({
 # Store Selected Pairs for Users
 selected_pair = {}
 
-# Initialize Scheduler
-scheduler = AsyncIOScheduler(timezone=pytz.utc)
+# Initialize Scheduler with Correct Timezone
+scheduler = AsyncIOScheduler(timezone=astimezone(pytz.utc))
+scheduler.start()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """ Start command: Show trading pair selection """
