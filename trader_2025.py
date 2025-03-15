@@ -13,15 +13,15 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
-# Load Environment Variables
+# ✅ Load Environment Variables
 load_dotenv()
 
-# Telegram & Binance API Keys
+# ✅ Telegram & Binance API Keys
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 
-# Configure Logging
+# ✅ Configure Logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -31,17 +31,17 @@ logging.basicConfig(
     ]
 )
 
-# Initialize Binance API
+# ✅ Initialize Binance API
 exchange = ccxt.binance({
     'enableRateLimit': True,
     'options': {'adjustForTimeDifference': True}
 })
 
-# Store Selected Pairs for Users
+# ✅ Store Selected Pairs for Users
 selected_pair = {}
 
-# Initialize Scheduler with Correct Timezone
-scheduler = AsyncIOScheduler(timezone=astimezone(pytz.utc))
+# ✅ Fix APScheduler Timezone Issue
+scheduler = AsyncIOScheduler(timezone=astimezone(pytz.timezone("UTC")))
 scheduler.start()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
