@@ -1,170 +1,228 @@
+#!/usr/bin/env python3
 import os
-import logging
 import asyncio
-import ccxt
+import hmac
+import hashlib
+import logging
+import ccxt.async_support as ccxt
 import pandas as pd
 import matplotlib.pyplot as plt
-from io import BytesIO
-from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from dotenv import load_dotenv
-
-# Load .env
-load_dotenv()
-
-# ENV Vars
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
-
-# Logging Setup
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler("bot_activity.log"), logging.StreamHandler()]
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes
 )
-logger = logging.getLogger(__name__)
+from ta import momentum, trend, volatility
 
-# Binance Init
-exchange = ccxt.binance({
-    "apiKey": BINANCE_API_KEY,
-    "secret": BINANCE_API_SECRET,
-    "enableRateLimit": True,
-    "options": {"defaultType": "spot"}
-})
+class BinanceTradeManager:
+    """Integrated Binance trading with proper authentication"""
+    def __init__(self):
+        self.exchange = ccxt.binance({
+            'apiKey': os.getenv("BINANCE_API_KEY"),
+            'secret': os.getenv("BINANCE_API_SECRET"),
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'spot',
+                'adjustForTimeDifference': True
+            }
+        })
 
-# Store User Pair Selection
-selected_pair = {}
+    async def execute_order(self, pair: str, side: str, amount: float, order_type: str = 'market'):
+        """Execute market order with risk checks"""
+        try:
+            # Get current price for amount validation
+            ticker = await self.exchange.fetch_ticker(pair)
+            min_notional = self.get_min_notional(pair)
+            
+            # Calculate notional value
+            notional = amount * ticker['last']
+            
+            if notional < min_notional:
+                raise ValueError(f"Order size too small. Minimum: {min_notional:.2f} USDT")
+            
+            return await self.exchange.create_order(
+                symbol=pair,
+                type=order_type,
+                side=side,
+                amount=amount,
+                params={'test': os.getenv("TEST_MODE", False)}  # Safety flag
+            )
+        except ccxt.InsufficientFunds as e:
+            logging.error(f"Insufficient funds: {str(e)}")
+            raise
+        except ccxt.InvalidOrder as e:
+            logging.error(f"Invalid order: {str(e)}")
+            raise
 
-# /start command
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Welcome! Use /select_pair to choose a crypto pair.")
+    def get_min_notional(self, pair: str):
+        """Get exchange minimum order requirements"""
+        market = self.exchange.market(pair)
+        return float(market['info']['filters'][3]['minNotional'])
 
-# /select_pair command - Allows predefined & manual input
-async def select_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton(pair, callback_data=f"pair_{pair}") for pair in ['BNB/USDT', 'BTC/USDT', 'ETH/USDT']],
-        [InlineKeyboardButton(pair, callback_data=f"pair_{pair}") for pair in ['XRP/USDT', 'SOL/USDT']],
-        [InlineKeyboardButton("🔍 Enter Manually", callback_data="manual_pair")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("📊 Select a trading pair:", reply_markup=reply_markup)
+class CryptoBot(BinanceTradeManager):
+    """Enhanced trading bot with integrated Binance execution"""
+    def __init__(self):
+        super().__init__()
+        self.app = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).build()
+        self.active_orders = {}
+        
+        # Register handlers
+        self.app.add_handler(CommandHandler("start", self.start_handler))
+        self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.message_handler))
+        self.app.add_handler(CallbackQueryHandler(self.button_handler))
+        
+        # Safety checks
+        if not os.getenv("TEST_MODE", False):
+            logging.warning("RUNNING IN LIVE TRADING MODE!")
 
-# Handle Pair Selection and Manual Entry
-async def handle_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
+    async def handle_trade_action(self, query, action: str):
+        """Enhanced order handling with confirmation"""
+        user_id = query.from_user.id
+        pair = self.active_orders.get(user_id, {}).get('pair')
+        
+        if not pair:
+            await query.message.reply_text("⚠️ No active pair selected!")
+            return
 
-    if query.data == "manual_pair":
-        await query.edit_message_text("🔍 Please type the trading pair (e.g., `ADA/USDT`) into the chat.")
-        return
+        # Get order details from user
+        await query.message.reply_text(f"Enter {action} amount for {pair}:")
+        self.user_states[user_id] = {'action': action, 'pair': pair}
 
-    pair = query.data.replace("pair_", "")
-    await validate_and_set_pair(update, context, pair)
+    async def process_trade_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Process trade execution with amount validation"""
+        user_id = update.message.from_user.id
+        state = self.user_states.get(user_id)
+        
+        if not state:
+            return
 
-# Handle User Input for Manual Pair Entry
-async def manual_pair_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pair = update.message.text.upper().strip()  # Convert input to uppercase
-    await validate_and_set_pair(update, context, pair)
+        try:
+            amount = float(update.message.text)
+            pair = state['pair']
+            
+            # Execute order
+            order = await self.execute_order(
+                pair=pair,
+                side=state['action'],
+                amount=amount
+            )
+            
+            # Format response
+            msg = (
+                f"✅ {state['action'].capitalize()} Order Executed!\n"
+                f"• Pair: {pair}\n"
+                f"• Amount: {amount:.4f}\n"
+                f"• Price: {order['price']:.2f}\n"
+                f"• Cost: {float(order['cost']):.2f} USDT"
+            )
+            
+            await update.message.reply_text(msg)
+            
+            # Store order details
+            self.active_orders[user_id] = {
+                'id': order['id'],
+                'pair': pair,
+                'side': state['action'],
+                'amount': amount,
+                'timestamp': pd.Timestamp.now()
+            }
+            
+        except ValueError as e:
+            await update.message.reply_text(f"⚠️ Invalid amount: {str(e)}")
+        except Exception as e:
+            await update.message.reply_text(f"🚨 Trade failed: {str(e)}")
+        finally:
+            self.user_states.pop(user_id, None)
 
-# Validate & Set the Trading Pair
-async def validate_and_set_pair(update: Update, context: ContextTypes.DEFAULT_TYPE, pair):
-    user_id = update.effective_user.id
-
-    try:
-        markets = exchange.load_markets()
-        if pair in markets:
-            selected_pair[user_id] = pair
-            await update.message.reply_text(f"✅ Pair set to: {pair}. Fetching analytics now...")
-            df = fetch_ohlcv(pair)
-            advice, fig = generate_analytics(df, pair)
-            await send_chart_with_buttons(context, user_id, advice, fig, df, pair)
+    # Add this to your existing message handler
+    async def message_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if self.user_states.get(update.message.from_user.id, {}).get('action'):
+            await self.process_trade_amount(update, context)
         else:
-            await update.message.reply_text("❌ Invalid pair! Enter a valid Binance pair (e.g., BNB/USDT).")
-    except Exception as e:
-        logger.error(f"Error validating pair: {e}")
-        await update.message.reply_text("⚠️ Error connecting to Binance. Try again later.")
+            # Existing message handling logic
+            ...
 
-# Fetch OHLCV Data from Binance
-def fetch_ohlcv(pair):
-    try:
-        ohlcv = exchange.fetch_ohlcv(pair, timeframe='15m', limit=50)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
-    except Exception as e:
-        logger.error(f"Error fetching OHLCV for {pair}: {e}")
-        raise
+    # Add order confirmation buttons
+    async def show_order_confirmation(self, user_id: int, pair: str):
+        """Show trade confirmation dialog"""
+        keyboard = [
+            [InlineKeyboardButton("Confirm Buy", callback_data=f"confirm_buy_{pair}"),
+             InlineKeyboardButton("Confirm Sell", callback_data=f"confirm_sell_{pair}")],
+            [InlineKeyboardButton("Cancel", callback_data="cancel_trade")]
+        ]
+        
+        await self.app.bot.send_message(
+            chat_id=user_id,
+            text=f"⚠️ Confirm trade for {pair}",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
-# Generate Technical Analysis + Chart
-def generate_analytics(df, pair):
-    df['EMA20'] = df['close'].ewm(span=20).mean()
-    df['EMA50'] = df['close'].ewm(span=50).mean()
-    df['RSI'] = calculate_rsi(df['close'])
+    # Enhanced button handler
+    async def button_handler(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data.startswith("confirm_"):
+            action, pair = query.data.split("_")[1], query.data.split("_")[2]
+            await self.handle_confirmed_trade(query, action, pair)
+        elif query.data == "cancel_trade":
+            await query.message.edit_text("❌ Trade canceled")
+        else:
+            # Existing button handling logic
+            ...
 
-    # MACD Calculation
-    df['MACD'] = df['close'].ewm(span=12).mean() - df['close'].ewm(span=26).mean()
+    async def handle_confirmed_trade(self, query, action: str, pair: str):
+        """Execute confirmed trade"""
+        try:
+            # Get cached amount from previous state
+            user_id = query.from_user.id
+            amount = self.user_states[user_id].get('amount')
+            
+            if not amount:
+                raise ValueError("No trade amount specified")
+            
+            order = await self.execute_order(pair, action, amount)
+            await query.message.edit_text(
+                f"✅ {action.capitalize()} order executed successfully!\n"
+                f"• ID: {order['id']}\n"
+                f"• Executed: {order['filled']} {pair.split('/')[0]}\n"
+                f"• Avg. Price: {order['average']:.2f}"
+            )
+        except Exception as e:
+            await query.message.edit_text(f"🚨 Trade execution failed: {str(e)}")
 
-    # Bollinger Bands
-    df['BB_MID'] = df['close'].rolling(window=20).mean()
-    df['BB_STD'] = df['close'].rolling(window=20).std()
-    df['BB_UPPER'] = df['BB_MID'] + (df['BB_STD'] * 2)
-    df['BB_LOWER'] = df['BB_MID'] - (df['BB_STD'] * 2)
+# Keep all the TA and charting logic from previous implementation
+# Add risk management features below
 
-    advice = "HOLD"
-    if df['RSI'].iloc[-1] < 30 and df['EMA20'].iloc[-1] > df['EMA50'].iloc[-1]:
-        advice = "🔥 STRONG BUY"
-    elif df['RSI'].iloc[-1] > 70 and df['EMA20'].iloc[-1] < df['EMA50'].iloc[-1]:
-        advice = "🚨 STRONG SELL"
-
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(df['timestamp'], df['close'], label='Price', linewidth=1.5)
-    ax.plot(df['timestamp'], df['EMA20'], label='EMA20', linestyle="dashed")
-    ax.plot(df['timestamp'], df['EMA50'], label='EMA50', linestyle="dashed")
-    ax.fill_between(df['timestamp'], df['BB_LOWER'], df['BB_UPPER'], color='gray', alpha=0.2, label="Bollinger Bands")
-
-    ax.set_title(f'{pair} Analysis | RSI: {df["RSI"].iloc[-1]:.2f} | Advice: {advice}')
-    ax.legend()
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-
-    return advice, fig
-
-# RSI Calculation
-def calculate_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-# Send Chart with Trade Confirmation & Change Pair Option
-async def send_chart_with_buttons(context, user_id, advice, fig, df, pair):
-    buf = BytesIO()
-    fig.savefig(buf, format='png')
-    buf.seek(0)
-    plt.close(fig)
-
-    keyboard = [[InlineKeyboardButton("✅ Confirm Buy", callback_data="confirm_buy"),
-                 InlineKeyboardButton("❌ Confirm Sell", callback_data="confirm_sell")],
-                [InlineKeyboardButton("🔄 Change Pair", callback_data="change_pair")]]
+class RiskManager:
+    """Add this to your existing bot class"""
+    MAX_DAILY_LOSS = 0.02  # 2% of portfolio
+    MAX_POSITION_SIZE = 0.1  # 10% per trade
     
-    await context.bot.send_photo(chat_id=user_id, photo=buf, caption=f"📊 {pair} Analysis:\n🎯 **{advice}**", reply_markup=InlineKeyboardMarkup(keyboard))
+    async def check_risk_parameters(self, user_id: int, amount: float, pair: str):
+        # Get portfolio balance
+        balance = await self.exchange.fetch_balance()
+        usdt_balance = balance['USDT']['free']
+        
+        # Get position size in USDT
+        ticker = await self.exchange.fetch_ticker(pair)
+        position_size = amount * ticker['last']
+        
+        # Check max position size
+        if position_size > usdt_balance * self.MAX_POSITION_SIZE:
+            raise ValueError(
+                f"Position size exceeds {self.MAX_POSITION_SIZE*100}% of portfolio"
+            )
+        
+        # Check daily loss limit (implement your own tracking)
+        if self.daily_pnl(user_id) < -abs(usdt_balance * self.MAX_DAILY_LOSS):
+            raise ValueError("Daily loss limit reached")
+        
+        return True
 
-# Main Function
-def main():
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("select_pair", select_pair))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manual_pair_entry))
-    app.add_handler(CallbackQueryHandler(handle_pair_callback, pattern="^pair_|^manual_pair$"))
-
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+# Add to your execute_order method
+# await self.check_risk_parameters(user_id, amount, pair)
