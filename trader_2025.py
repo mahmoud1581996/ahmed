@@ -103,7 +103,7 @@ if positions:
 total_return = (balance - initial_balance) / initial_balance * 100
 
 # Calculate annualized return
-years = (df.index[-1] - df.index[0]).total_seconds() / (365.25 * 24 * 60 * 60)  # Adjusted to get years
+years = (df.index[-1] - df.index[0]).days / 365.25  # Correct calculation of years
 annualized_return = (1 + total_return / 100) ** (1 / years) - 1
 
 # Calculate Sharpe Ratio
