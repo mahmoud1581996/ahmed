@@ -50,7 +50,7 @@ data = exchange.fetch_ohlcv(symbol, timeframe, since, limit)
 
 # Convert the data to a pandas DataFrame
 df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+df['timestamp'] = pd.to_datetime(df['timestamp'])
 
 # Calculate the 50-day and 200-day EMAs
 df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
@@ -103,7 +103,8 @@ if positions:
 total_return = (balance - initial_balance) / initial_balance * 100
 
 # Calculate annualized return
-years = (df.index[-1] - df.index[0]).days / 365.25  # Correct calculation of years
+time_difference = (df['timestamp'].iloc[-1] - df['timestamp'].iloc[0])
+years = time_difference.total_seconds() / (365.25 * 24 * 60 * 60)  # Convert time difference to years
 annualized_return = (1 + total_return / 100) ** (1 / years) - 1
 
 # Calculate Sharpe Ratio
