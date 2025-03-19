@@ -1,173 +1,119 @@
-import os
-import asyncio
-import logging
 import ccxt
 import pandas as pd
-import pandas_ta as ta
-import mplfinance as mpf
+import logging
+import telegram
+import asyncio
 import matplotlib.pyplot as plt
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.contrib.fsm_storage.memory import MemoryStorage
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from ta.trend import MACD
+from ta.momentum import RSIIndicator
+from ta.volatility import BollingerBands
+from io import BytesIO
 from dotenv import load_dotenv
-
 import os
-from dotenv import load_dotenv
 
-# ✅ Explicitly specify the .env path
-env_path = "/home/ec2-user/.env"
-if os.path.exists(env_path):
-    load_dotenv(env_path)
-else:
-    raise FileNotFoundError(f"❌ ERROR: .env file not found at {env_path}")
+class AdvancedBNBBot:
+    def __init__(self, api_key, api_secret, telegram_token, chat_id, symbol='BNB/USDT', timeframe='1h'):
+        self.exchange = ccxt.binance({
+            'apiKey': api_key,
+            'secret': api_secret,
+            'enableRateLimit': True
+        })
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.telegram_token = telegram_token
+        self.chat_id = chat_id
+        self.bot = telegram.Bot(token=self.telegram_token)
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
 
-# ✅ Load variables
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
-BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+    def fetch_market_data(self, limit=100):
+        """Fetch OHLCV data from Binance."""
+        try:
+            bars = self.exchange.fetch_ohlcv(self.symbol, self.timeframe, limit=limit)
+            df = pd.DataFrame(bars, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            return df
+        except Exception as e:
+            logging.error(f"Error fetching market data: {e}")
+            return None
 
-# ✅ Debugging: Print values (ONLY for testing, remove in production)
-print(f"TELEGRAM_BOT_TOKEN: {TELEGRAM_BOT_TOKEN}")
-print(f"BINANCE_API_KEY: {BINANCE_API_KEY}")
-print(f"BINANCE_SECRET_KEY: {BINANCE_SECRET_KEY}")
-print(f"TELEGRAM_CHAT_ID: {TELEGRAM_CHAT_ID}")
+    def analyze_market(self):
+        """Perform technical analysis using indicators."""
+        df = self.fetch_market_data()
+        if df is not None:
+            df['RSI'] = RSIIndicator(df['close']).rsi()
+            macd = MACD(df['close'])
+            df['MACD'] = macd.macd()
+            df['MACD_signal'] = macd.macd_signal()
+            bb = BollingerBands(df['close'])
+            df['BB_upper'] = bb.bollinger_hband()
+            df['BB_lower'] = bb.bollinger_lband()
 
-# ✅ Ensure the variables are loaded
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("❌ ERROR: TELEGRAM_BOT_TOKEN is missing! Check your .env file.")
+            # Decision Logic
+            last_rsi = df['RSI'].iloc[-1]
+            last_macd = df['MACD'].iloc[-1]
+            last_macd_signal = df['MACD_signal'].iloc[-1]
+            last_price = df['close'].iloc[-1]
 
-# Continue with bot initialization...
+            signal = "HOLD"
+            if last_rsi < 30 and last_macd > last_macd_signal:
+                signal = "BUY"
+            elif last_rsi > 70 and last_macd < last_macd_signal:
+                signal = "SELL"
 
+            return df, signal, last_price
+        return None, None, None
 
-# ✅ Validate Token Before Proceeding
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("❌ ERROR: Missing TELEGRAM_BOT_TOKEN in .env file")
+    async def send_analysis(self):
+        """Send market analysis to Telegram."""
+        df, signal, last_price = self.analyze_market()
+        if df is not None:
+            message = f"BNB Analysis:\nPrice: {last_price}\nSignal: {signal}\nRSI: {df['RSI'].iloc[-1]}\nMACD: {df['MACD'].iloc[-1]}\nMACD Signal: {df['MACD_signal'].iloc[-1]}"
+            await self.bot.send_message(chat_id=self.chat_id, text=message)
+            self.visualize_market(df)
 
-# ✅ Initialize Telegram Bot
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
-dp = Dispatcher(bot, storage=MemoryStorage())
+    def visualize_market(self, df):
+        """Generate a market visualization and send it via Telegram."""
+        plt.figure(figsize=(10, 5))
+        plt.plot(df['timestamp'], df['close'], label='Price', color='blue')
+        plt.plot(df['timestamp'], df['BB_upper'], label='Bollinger Upper', linestyle='dashed')
+        plt.plot(df['timestamp'], df['BB_lower'], label='Bollinger Lower', linestyle='dashed')
+        plt.title(f"{self.symbol} Price with Bollinger Bands")
+        plt.xlabel("Time")
+        plt.ylabel("Price")
+        plt.legend()
+        buf = BytesIO()
+        plt.savefig(buf, format='png')
+        buf.seek(0)
+        asyncio.run(self.bot.send_photo(chat_id=self.chat_id, photo=buf))
 
-# ✅ Initialize Binance API
-binance = ccxt.binance({
-    'apiKey': BINANCE_API_KEY,
-    'secret': BINANCE_API_SECRET,
-    'enableRateLimit': True
-})
+    async def handle_telegram_commands(self, update):
+        """Process Telegram commands."""
+        command = update.message.text.lower()
+        if command == '/analyze':
+            await self.send_analysis()
+        elif command == '/trade buy':
+            self.place_order('buy', 0.01)
+            await self.bot.send_message(chat_id=self.chat_id, text="BUY Order Placed.")
+        elif command == '/trade sell':
+            self.place_order('sell', 0.01)
+            await self.bot.send_message(chat_id=self.chat_id, text="SELL Order Placed.")
 
-selected_pair = "BTC/USDT"
-previous_price = None
-scheduler = AsyncIOScheduler()
-
-logging.basicConfig(level=logging.INFO)
-
-# 📊 Fetch Market Data
-async def fetch_binance_data(symbol, timeframe='5m', limit=100):
-    try:
-        ohlcv = binance.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
-    except Exception as e:
-        logging.error(f"Error fetching Binance data: {e}")
-        return None
-
-# 📈 Perform Technical Analysis
-async def analyze_market(pair):
-    global previous_price
-    df = await fetch_binance_data(pair)
-    if df is None or df.empty:
-        return "⚠️ Error fetching data."
-
-    df.ta.rsi(length=14, append=True)
-    df.ta.macd(fast=12, slow=26, signal=9, append=True)
-    df.ta.ema(length=50, append=True)
-    df.ta.ema(length=200, append=True)
-    df.ta.bbands(length=20, std=2, append=True)
-
-    last_close = df.iloc[-1]['close']
-    previous_price = last_close if previous_price is None else previous_price
-    price_change = (last_close - previous_price) / previous_price * 100
-
-    report = (
-        f"📊 *Technical Analysis for {pair}*\n"
-        f"📈 Price: *{last_close:.2f} USDT*\n"
-        f"🔹 RSI: {df.iloc[-1]['RSI_14']:.2f}\n"
-        f"🔸 MACD: {df.iloc[-1]['MACD_12_26_9']:.2f}\n"
-        f"🔹 EMA 50: {df.iloc[-1]['EMA_50']:.2f}\n"
-        f"🔸 EMA 200: {df.iloc[-1]['EMA_200']:.2f}\n"
-        f"🔹 Bollinger Upper: {df.iloc[-1]['BBU_20_2.0']:.2f}\n"
-        f"🔸 Bollinger Lower: {df.iloc[-1]['BBL_20_2.0']:.2f}\n"
-        f"📊 *Price Change:* {price_change:.2f}%\n"
-    )
-
-    previous_price = last_close
-    await generate_chart(df, pair)
-    return report
-
-# 📉 Generate Chart
-async def generate_chart(df, pair):
-    df.set_index("timestamp", inplace=True)
-    df.ta.ema(length=50, append=True)
-    df.ta.ema(length=200, append=True)
-
-    mpf.plot(
-        df.tail(50),
-        type='candle',
-        style='charles',
-        title=f"{pair} - Last 50 Candles",
-        ylabel='Price (USDT)',
-        volume=True,
-        mav=(50, 200),
-        savefig="chart.png"
-    )
-
-# 🛒 Telegram Inline Buttons
-def get_trade_buttons():
-    buttons = [
-        [InlineKeyboardButton("✅ Buy", callback_data="buy"),
-         InlineKeyboardButton("❌ Sell", callback_data="sell")],
-        [InlineKeyboardButton("🔄 Change Pair", callback_data="change_pair")]
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-# 🏦 Handle Trade Confirmation
-@dp.callback_query_handler(lambda c: c.data in ["buy", "sell"])
-async def process_trade(callback_query: types.CallbackQuery):
-    action = "BUY" if callback_query.data == "buy" else "SELL"
-    await bot.send_message(callback_query.from_user.id, f"✅ Confirmed {action} order for {selected_pair}")
-
-# 🔄 Handle Pair Change
-@dp.callback_query_handler(lambda c: c.data == "change_pair")
-async def change_pair(callback_query: types.CallbackQuery):
-    await bot.send_message(callback_query.from_user.id, "📊 Enter the trading pair (e.g., BTC/USDT):")
-
-@dp.message_handler()
-async def handle_new_pair(message: types.Message):
-    global selected_pair
-    selected_pair = message.text.upper()
-    await bot.send_message(message.chat.id, f"✅ Selected Pair: {selected_pair}")
-    await send_market_analysis(message.chat.id)
-
-# 📌 Send Market Analysis
-async def send_market_analysis(chat_id):
-    report = await analyze_market(selected_pair)
-    await bot.send_message(chat_id, report, parse_mode="Markdown", reply_markup=get_trade_buttons())
-    await bot.send_photo(chat_id, photo=open("chart.png", "rb"))
-
-# ⏳ Periodic Market Updates
-async def periodic_analysis():
-    chat_id = YOUR_TELEGRAM_CHAT_ID
-    report = await analyze_market(selected_pair)
-    await bot.send_message(chat_id, report, parse_mode="Markdown", reply_markup=get_trade_buttons())
-    await bot.send_photo(chat_id, photo=open("chart.png", "rb"))
-
-# 🚀 Start Bot
-async def main():
-    scheduler.add_job(periodic_analysis, "interval", minutes=10)
-    scheduler.start()
-    await dp.start_polling()
+    def place_order(self, side, quantity):
+        """Execute buy or sell order."""
+        try:
+            order = self.exchange.create_market_order(self.symbol, side, quantity)
+            logging.info(f"Placed {side.upper()} order: {order}")
+            return order
+        except Exception as e:
+            logging.error(f"Error placing order: {e}")
+            return None
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    load_dotenv()
+    api_key = os.getenv("API_KEY")
+    api_secret = os.getenv("API_SECRET")
+    telegram_token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
+    
+    bot = AdvancedBNBBot(api_key, api_secret, telegram_token, chat_id)
+    asyncio.run(bot.send_analysis())
