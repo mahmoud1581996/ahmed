@@ -1,5 +1,5 @@
-import requests
 import os
+import requests
 from dotenv import load_dotenv
 import ccxt
 import pandas as pd
@@ -7,12 +7,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 
-# Load the .env file for sensitive information (like API keys)
+# Load the environment variables from the .env file
 load_dotenv()
 
-# Telegram details
-TELEGRAM_API_TOKEN = os.getenv('TELEGRAM_API_TOKEN')  # Your bot's API token
+# Telegram details from .env
+TELEGRAM_API_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')  # Your Telegram bot token
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')  # Your chat ID
+
+# Binance API details from .env
+BINANCE_API_KEY = os.getenv('BINANCE_API_KEY')  # Binance API Key
+BINANCE_SECRET_KEY = os.getenv('BINANCE_SECRET_KEY')  # Binance Secret Key
 
 # Telegram message sending function
 def send_telegram_message(message):
@@ -29,21 +33,19 @@ def send_results_to_telegram(results):
     message = "\n".join([f"{key}: {value}" for key, value in results.items()])
     send_telegram_message(message)
 
-# Binance API integration
-binance_api_key = os.getenv('BINANCE_API_KEY')
-binance_api_secret = os.getenv('BINANCE_API_SECRET')
-
+# Initialize the Binance connection using ccxt
 exchange = ccxt.binance({
-    'apiKey': binance_api_key,
-    'secret': binance_api_secret,
+    'apiKey': BINANCE_API_KEY,
+    'secret': BINANCE_SECRET_KEY,
 })
 
 # Fetch historical data for Bitcoin (BTC/USDT)
 symbol = 'BTC/USDT'
-timeframe = '1d'
-since = exchange.parse8601('2015-01-01T00:00:00Z')
-limit = 2000
+timeframe = '1d'  # Daily data
+since = exchange.parse8601('2015-01-01T00:00:00Z')  # Start date for historical data
+limit = 2000  # Number of data points to fetch
 
+# Fetch OHLCV (Open, High, Low, Close, Volume) data from Binance
 data = exchange.fetch_ohlcv(symbol, timeframe, since, limit)
 
 # Convert the data to a pandas DataFrame
@@ -56,10 +58,30 @@ df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
 
 # Generate Buy and Sell signals
 df['Signal'] = 0
-df['Signal'][50:] = np.where(df['EMA50'][50:] > df['EMA200'][50:], 1, 0)
+df.loc[50:, 'Signal'] = np.where(df['EMA50'][50:] > df['EMA200'][50:], 1, 0)  # Fix for chained assignment
 df['Position'] = df['Signal'].diff()
 
-# Performance metrics calculation (same as before)
+# Plot the closing price and EMAs
+plt.figure(figsize=(14,7))
+plt.plot(df['close'], label='BTC-USD Closing Price', color='blue', alpha=0.5)
+plt.plot(df['EMA50'], label='50-Day EMA', color='red')
+plt.plot(df['EMA200'], label='200-Day EMA', color='green')
+
+# Plot Buy signals
+plt.plot(df[df['Position'] == 1].index, 
+         df['EMA50'][df['Position'] == 1], 
+         '^', markersize=10, color='g', lw=0, label='Buy Signal')
+
+# Plot Sell signals
+plt.plot(df[df['Position'] == -1].index, 
+         df['EMA50'][df['Position'] == -1], 
+         'v', markersize=10, color='r', lw=0, label='Sell Signal')
+
+plt.title('Bitcoin Price and EMA Crossover Strategy')
+plt.legend(loc='best')
+plt.show()
+
+# Calculate performance metrics
 initial_balance = 10000
 balance = initial_balance
 positions = []
@@ -81,7 +103,7 @@ if positions:
 total_return = (balance - initial_balance) / initial_balance * 100
 
 # Calculate annualized return
-years = (df.index[-1] - df.index[0]).days / 365.25
+years = (df.index[-1] - df.index[0]).total_seconds() / (365.25 * 24 * 60 * 60)  # Adjusted to get years
 annualized_return = (1 + total_return / 100) ** (1 / years) - 1
 
 # Calculate Sharpe Ratio
