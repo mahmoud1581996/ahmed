@@ -106,7 +106,12 @@ for i in range(1, len(df)):
 
 # Final balance calculation
 if positions:
-    balance = positions[-1] * df['close'][-1]
+   # Handle case where there are no positions
+if len(positions) > 0:
+    balance = positions[-1] * df['close'][-1]  # Correctly access last element
+else:
+    balance = initial_balance  # No positions, so balance stays the same
+
 
 # Performance Metrics Calculation
 total_return = (balance - initial_balance) / initial_balance * 100
