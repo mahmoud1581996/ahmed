@@ -39,10 +39,10 @@ exchange = ccxt.binance({
     'secret': BINANCE_SECRET_KEY,
 })
 
-# Fetch historical data for Bitcoin (BTC/USDT)
-symbol = 'BTC/USDT'
+# Fetch historical data for Binance Coin (BNB/USDT)
+symbol = 'BNB/USDT'
 timeframe = '1d'  # Daily data
-since = exchange.parse8601('2015-01-01T00:00:00Z')  # Start date for historical data
+since = exchange.parse8601('2021-01-01T00:00:00Z')  # Start date for historical data
 limit = 2000  # Number of data points to fetch
 
 # Fetch OHLCV (Open, High, Low, Close, Volume) data from Binance
@@ -50,61 +50,69 @@ data = exchange.fetch_ohlcv(symbol, timeframe, since, limit)
 
 # Convert the data to a pandas DataFrame
 df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-df['timestamp'] = pd.to_datetime(df['timestamp'])
+df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
 
-# Calculate the 50-day and 200-day EMAs
-df['EMA50'] = df['close'].ewm(span=50, adjust=False).mean()
-df['EMA200'] = df['close'].ewm(span=200, adjust=False).mean()
+# Calculate the RSI (Relative Strength Index)
+def compute_rsi(data, window=14):
+    delta = data.diff()
+    gain = (delta.where(delta > 0, 0)).fillna(0)
+    loss = (-delta.where(delta < 0, 0)).fillna(0)
 
-# Generate Buy and Sell signals
+    avg_gain = gain.rolling(window=window, min_periods=1).mean()
+    avg_loss = loss.rolling(window=window, min_periods=1).mean()
+
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+df['RSI'] = compute_rsi(df['close'], window=14)
+
+# Generate Buy and Sell signals based on RSI
 df['Signal'] = 0
-df.loc[50:, 'Signal'] = np.where(df['EMA50'][50:] > df['EMA200'][50:], 1, 0)  # Fix for chained assignment
-df['Position'] = df['Signal'].diff()
+df.loc[df['RSI'] < 30, 'Signal'] = 1  # Buy signal when RSI < 30
+df.loc[df['RSI'] > 70, 'Signal'] = -1  # Sell signal when RSI > 70
 
-# Plot the closing price and EMAs
+# Plot the RSI and signals
 plt.figure(figsize=(14,7))
-plt.plot(df['close'], label='BTC-USD Closing Price', color='blue', alpha=0.5)
-plt.plot(df['EMA50'], label='50-Day EMA', color='red')
-plt.plot(df['EMA200'], label='200-Day EMA', color='green')
+plt.plot(df['timestamp'], df['RSI'], label='RSI', color='blue')
+plt.axhline(y=30, color='green', linestyle='--', label='Buy Signal (RSI < 30)')
+plt.axhline(y=70, color='red', linestyle='--', label='Sell Signal (RSI > 70)')
 
 # Plot Buy signals
-plt.plot(df[df['Position'] == 1].index, 
-         df['EMA50'][df['Position'] == 1], 
-         '^', markersize=10, color='g', lw=0, label='Buy Signal')
+plt.plot(df[df['Signal'] == 1]['timestamp'], df['RSI'][df['Signal'] == 1], '^', markersize=10, color='g', lw=0, label='Buy Signal')
 
 # Plot Sell signals
-plt.plot(df[df['Position'] == -1].index, 
-         df['EMA50'][df['Position'] == -1], 
-         'v', markersize=10, color='r', lw=0, label='Sell Signal')
+plt.plot(df[df['Signal'] == -1]['timestamp'], df['RSI'][df['Signal'] == -1], 'v', markersize=10, color='r', lw=0, label='Sell Signal')
 
-plt.title('Bitcoin Price and EMA Crossover Strategy')
+plt.title('RSI Strategy: Buy (RSI < 30) / Sell (RSI > 70)')
 plt.legend(loc='best')
 plt.show()
 
-# Calculate performance metrics
+# Backtesting the strategy
 initial_balance = 10000
 balance = initial_balance
 positions = []
+buy_price = 0
+sell_price = 0
 
-# Simulate strategy performance
 for i in range(1, len(df)):
-    if df['Position'][i] == 1:
-        # Buy signal: invest at close price
-        positions.append(balance / df['close'][i])
+    if df['Signal'][i] == 1 and balance > 0:  # Buy signal (RSI < 30)
+        buy_price = df['close'][i]
+        positions.append(balance / buy_price)
         balance = 0
-    elif df['Position'][i] == -1 and positions:
-        # Sell signal: liquidate at close price
-        balance = positions.pop() * df['close'][i]
+    elif df['Signal'][i] == -1 and positions:  # Sell signal (RSI > 70)
+        sell_price = df['close'][i]
+        balance = positions.pop() * sell_price
 
 # Final balance calculation
 if positions:
     balance = positions[-1] * df['close'][-1]
 
+# Performance Metrics Calculation
 total_return = (balance - initial_balance) / initial_balance * 100
 
 # Calculate annualized return
-time_difference = (df['timestamp'].iloc[-1] - df['timestamp'].iloc[0])
-years = time_difference.total_seconds() / (365.25 * 24 * 60 * 60)  # Convert time difference to years
+years = (df['timestamp'].iloc[-1] - df['timestamp'].iloc[0]).days / 365.25
 annualized_return = (1 + total_return / 100) ** (1 / years) - 1
 
 # Calculate Sharpe Ratio
@@ -118,8 +126,8 @@ drawdown = (cumulative_returns - peak) / peak
 max_drawdown = drawdown.min()
 
 # Calculate Win Rate
-win_trades = sum([1 for i in range(1, len(df)) if df['Position'][i] == -1 and df['close'][i] > df['close'][i-1]])
-total_trades = len(df[df['Position'] != 0])
+win_trades = sum([1 for i in range(1, len(df)) if df['Signal'][i] == -1 and df['close'][i] > df['close'][i-1]])
+total_trades = len(df[df['Signal'] != 0])
 win_rate = win_trades / total_trades * 100 if total_trades > 0 else 0
 
 # Store results in a dictionary
@@ -133,3 +141,4 @@ results = {
 
 # Send the results to Telegram
 send_results_to_telegram(results)
+
